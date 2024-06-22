@@ -1,5 +1,7 @@
 # 🛠️ xcodebuild.nvim
 
+# I forked this to use fzf-lua instead of telescope
+
 A plugin designed to let you migrate your app development from Xcode to Neovim.
 It provides all essential actions for development including building, debugging, and testing.
 

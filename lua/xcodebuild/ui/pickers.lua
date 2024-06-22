@@ -19,13 +19,7 @@ local config = require("xcodebuild.core.config").options
 local projectConfig = require("xcodebuild.project.config")
 local snapshots = require("xcodebuild.tests.snapshots")
 local deviceProxy = require("xcodebuild.platform.device_proxy")
-
-local telescopePickers = require("telescope.pickers")
-local telescopeFinders = require("telescope.finders")
-local telescopeConfig = require("telescope.config").values
-local telescopeActions = require("telescope.actions")
-local telescopeState = require("telescope.actions.state")
-local telescopeActionsUtils = require("telescope.actions.utils")
+local fzf = require("fzf-lua")
 
 local M = {}
 
@@ -45,7 +39,6 @@ local progressFrames = {
   "[    . ]",
 }
 
----Updates xcode-build-server config if needed.
 local function update_xcode_build_server_config()
   local xcodeBuildServer = require("xcodebuild.integrations.xcode-build-server")
 
@@ -61,58 +54,40 @@ local function update_xcode_build_server_config()
   end
 end
 
----Stops the spinner animation.
-local function stop_telescope_spinner()
+local function stop_spinner()
   if progressTimer then
     vim.fn.timer_stop(progressTimer)
     progressTimer = nil
   end
 end
 
----Updates the spinner animation.
-local function update_telescope_spinner()
+local function update_spinner()
   if activePicker and vim.api.nvim_win_is_valid(activePicker.results_win) then
     currentProgressFrame = currentProgressFrame >= #progressFrames and 1 or currentProgressFrame + 1
-    activePicker:change_prompt_prefix(progressFrames[currentProgressFrame] .. " ", "TelescopePromptPrefix")
+    activePicker:change_prompt_prefix(progressFrames[currentProgressFrame] .. " ", "FzfPromptPrefix")
   else
-    stop_telescope_spinner()
+    stop_spinner()
   end
 end
 
----Starts the spinner animation.
-local function start_telescope_spinner()
+local function start_spinner()
   if not progressTimer then
-    progressTimer = vim.fn.timer_start(80, update_telescope_spinner, { ["repeat"] = -1 })
+    progressTimer = vim.fn.timer_start(80, update_spinner, { ["repeat"] = -1 })
   end
 end
 
----Updates the results of the picker and stops the animation.
----@param results string[]
----@param force boolean|nil
 local function update_results(results, force)
   if currentJobId == nil and not force then
     return
   end
 
-  stop_telescope_spinner()
+  stop_spinner()
 
   if activePicker then
-    activePicker:refresh(
-      telescopeFinders.new_table({
-        results = results,
-      }),
-      {
-        new_prefix = telescopeConfig.prompt_prefix,
-      }
-    )
+    activePicker:refresh(results)
   end
 end
 
----Shows a picker using Telescope.nvim.
----@param title string
----@param items string[]
----@param callback function|nil
----@param opts PickerOptions|nil
 function M.show(title, items, callback, opts)
   if currentJobId then
     vim.fn.jobstop(currentJobId)
@@ -121,60 +96,31 @@ function M.show(title, items, callback, opts)
 
   opts = opts or {}
 
-  activePicker = telescopePickers.new(require("telescope.themes").get_dropdown({}), {
-    prompt_title = title,
-    finder = telescopeFinders.new_table({
-      results = items,
-    }),
-    sorter = telescopeConfig.generic_sorter(),
-    file_ignore_patterns = {},
-    attach_mappings = function(prompt_bufnr, _)
-      if opts.on_refresh ~= nil then
-        vim.keymap.set({ "n", "i" }, "<C-r>", function()
-          start_telescope_spinner()
-          opts.on_refresh()
-        end, { silent = true, buffer = prompt_bufnr })
-      end
-
-      telescopeActions.select_default:replace(function()
-        local selection = telescopeState.get_selected_entry()
+  fzf.fzf_exec(items, {
+    prompt = title .. "> ",
+    actions = {
+      ["default"] = function(selected)
+        local selection = selected[1]
 
         local results = {}
         if opts.multiselect then
-          telescopeActionsUtils.map_selections(prompt_bufnr, function(sel)
-            table.insert(results, sel[1])
-          end)
-
-          if util.is_empty(results) and selection then
-            table.insert(results, selection[1])
+          for _, sel in ipairs(selected) do
+            table.insert(results, sel)
           end
-        end
-
-        if opts.close_on_select and selection then
-          telescopeActions.close(prompt_bufnr)
         end
 
         if callback and selection then
           if opts.multiselect then
             callback(results)
           else
-            callback(selection[1], selection.index)
+            callback(selection)
           end
         end
-      end)
-      return true
-    end,
+      end,
+    },
   })
-
-  activePicker:find()
 end
 
----Shows a picker with the available `xcodeproj` files
----if this is not already set in the project settings.
----If the `xcworkspace` is set and there is the corresponding
--- `xcodeproj` file with the same name, it will be selected automatically.
----@param callback fun(xcodeproj: string)|nil
----@param opts PickerOptions|nil
 function M.select_xcodeproj_if_needed(callback, opts)
   if projectConfig.settings.xcodeproj then
     util.call(callback, projectConfig.settings.xcodeproj)
@@ -193,9 +139,6 @@ function M.select_xcodeproj_if_needed(callback, opts)
   end
 end
 
----Shows a picker with `xcodeproj` files
----@param callback fun(xcodeproj: string)|nil
----@param opts PickerOptions|nil
 function M.select_xcodeproj(callback, opts)
   local maxdepth = config.commands.project_search_max_depth
   local sanitizedFiles = {}
@@ -226,9 +169,6 @@ function M.select_xcodeproj(callback, opts)
   end, opts)
 end
 
----Shows a picker with `xcworkspace` and `xcodeproj` files.
----@param callback fun(projectFile: string)|nil
----@param opts PickerOptions|nil
 function M.select_project(callback, opts)
   local maxdepth = config.commands.project_search_max_depth
   local sanitizedFiles = {}
@@ -266,9 +206,6 @@ function M.select_project(callback, opts)
   end, opts)
 end
 
----Shows a picker with the available schemes.
----@param callback fun(scheme: string)|nil
----@param opts PickerOptions|nil
 function M.select_scheme(callback, opts)
   local xcodeproj = projectConfig.settings.xcodeproj
   if not xcodeproj then
@@ -288,7 +225,7 @@ function M.select_scheme(callback, opts)
     end, 100)
   end
 
-  start_telescope_spinner()
+  start_spinner()
   M.show("Select Scheme", {}, function(value, _)
     selectScheme(value)
   end, opts)
@@ -308,10 +245,6 @@ function M.select_scheme(callback, opts)
   end)
 end
 
----Shows a picker with the available test plans.
----@param callback fun(testPlan: string|nil)|nil
----@param opts PickerOptions|nil
----@return number|nil job id
 function M.select_testplan(callback, opts)
   local projectCommand = projectConfig.settings.projectCommand
   local scheme = projectConfig.settings.scheme
@@ -332,11 +265,11 @@ function M.select_testplan(callback, opts)
 
   local function closePicker()
     if activePicker and util.is_not_empty(vim.fn.win_findbuf(activePicker.prompt_bufnr)) then
-      telescopeActions.close(activePicker.prompt_bufnr)
+      fzf.actions.close(activePicker.prompt_bufnr)
     end
   end
 
-  start_telescope_spinner()
+  start_spinner()
   M.show("Select Test Plan", {}, function(value, _)
     selectTestPlan(value)
   end, opts)
@@ -362,13 +295,6 @@ function M.select_testplan(callback, opts)
   return currentJobId
 end
 
----Shows a picker with the available devices.
----It returns devices from cache if available and the `cache_devices`
----option in config is enabled.
----@param callback fun(destination: Device[])|nil
----@param opts PickerOptions|nil
----@return number|nil job id if launched
----@see xcodebuild.config
 function M.select_destination(callback, opts)
   opts = opts or {}
 
@@ -455,7 +381,7 @@ function M.select_destination(callback, opts)
   end
 
   if not hasCachedDevices then
-    start_telescope_spinner()
+    start_spinner()
   end
 
   opts.on_refresh = getConnectedDevices
@@ -474,14 +400,13 @@ function M.select_destination(callback, opts)
   end
 end
 
----Shows a picker with the available failing snapshots.
 function M.select_failing_snapshot_test()
   local failingSnapshots = snapshots.get_failing_snapshots()
   local filenames = util.select(failingSnapshots, function(item)
     return util.get_filename(item)
   end)
 
-  require("xcodebuild.ui.pickers").show("Failing Snapshot Tests", filenames, function(_, index)
+  M.show("Failing Snapshot Tests", filenames, function(_, index)
     local selectedFile = failingSnapshots[index]
     vim.fn.jobstart("qlmanage -p '" .. selectedFile .. "'", {
       detach = true,
@@ -490,8 +415,6 @@ function M.select_failing_snapshot_test()
   end)
 end
 
----Shows a picker with the available actions.
----If the project is not configured, it will show the configuration wizard.
 function M.show_all_actions()
   local actions = require("xcodebuild.actions")
   local actionsNames = {
@@ -620,15 +543,21 @@ function M.show_all_actions()
     end
   end
 
-  M.show("Xcodebuild Actions", actionsNames, function(_, index)
-    local selectSchemeIndex = util.indexOf(actionsNames, "Select Scheme")
+  fzf.fzf_exec(actionsNames, {
+    prompt = "Xcodebuild Actions> ",
+    actions = {
+      ["default"] = function(selected)
+        local index = util.indexOf(actionsNames, selected[1])
+        local selectSchemeIndex = util.indexOf(actionsNames, "Select Scheme")
 
-    if #actionsNames == 1 or index >= selectSchemeIndex then
-      actionsPointers[index]()
-    else
-      vim.defer_fn(actionsPointers[index], 100)
-    end
-  end, { close_on_select = true })
+        if #actionsNames == 1 or index >= selectSchemeIndex then
+          actionsPointers[index]()
+        else
+          vim.defer_fn(actionsPointers[index], 100)
+        end
+      end,
+    },
+  })
 end
 
 return M
